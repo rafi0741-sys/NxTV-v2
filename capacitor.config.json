@@ -1,0 +1,12 @@
+{
+  "appId": "com.nxtv.app",
+  "appName": "NXTV",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}
