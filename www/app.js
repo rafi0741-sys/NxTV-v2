@@ -41,7 +41,14 @@ function setFocus(el){
   if(!el) return;
   if(focusEl) focusEl.classList.remove('on');
   focusEl=el; el.classList.add('on');
-  if(el.tagName==='INPUT') el.focus({preventScroll:true});
+  if(el.tagName==='INPUT'){
+    el.focus({preventScroll:true});
+  } else if(document.activeElement && document.activeElement.tagName==='INPUT'){
+    // Blur the input we just left so the key handler stops treating keys as
+    // "typing" — otherwise OK/Enter on a focused button is ignored (the bug
+    // that broke the D-pad Connect button on the TV remote).
+    document.activeElement.blur();
+  }
   el.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function focusables(scope){
@@ -109,7 +116,12 @@ function navigate(dir){
 
 function navApp(dir){
   const els=focusables($('#app'));
-  if(!focusEl || !els.includes(focusEl)){ setFocus(els[0]); return; }
+  if(!focusEl || !focusEl.isConnected || !els.includes(focusEl)){
+    // Focus was lost or element was detached — land on the playing channel or first channel, not the Home button
+    const target=$('#chList .ch.playing')||$('#chList .ch')||els[0];
+    if(target) setFocus(target);
+    return;
+  }
   const vertical=(dir==='up'||dir==='down');
   const curCol=colOf(focusEl);
   let pool;
@@ -184,7 +196,7 @@ function handleBack(){
   if($('#vwrap').classList.contains('fs')){ exitFs(); return true; }
   if($('#editor').classList.contains('show')){ closeEditor(); return true; }
   if($('#app').classList.contains('show')){ stopPlayback(); showHome(); return true; }
-  return false; // on home → allow app exit
+  return true; // on home/login: never exit via Back — use the Home button to leave
 }
 
 /* =========================================================================
@@ -198,7 +210,8 @@ document.addEventListener('keydown',e=>{
 
   if(BACK_KEYS.has(k)||BACK_CODES.has(code)){
     if(typing && (k==='Backspace')) return; // allow editing text
-    if(handleBack()){ e.preventDefault(); e.stopPropagation(); }
+    handleBack(); // always handle — Back never exits the app
+    e.preventDefault(); e.stopPropagation();
     return;
   }
   if(k==='ArrowLeft'){ if(!typing){ navigate('left'); e.preventDefault(); } }
@@ -611,7 +624,7 @@ if(window.__NXTV_DESKTOP){ const q=$('#quitBtn'); if(q){ q.style.display='inline
   let done=false;
   function attach(App){ if(done||!App)return; try{ App.addListener('backButton',()=>{ if(!handleBack()){ try{App.exitApp();}catch(e){} } }); done=true; }catch(e){} }
   function tryAttach(){ if(done)return true; if(window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.App){ attach(window.Capacitor.Plugins.App); return true; } return false; }
-  if(!tryAttach()){ document.addEventListener('deviceready',tryAttach); let n=0; const iv=setInterval(()=>{ if(tryAttach()||++n>20)clearInterval(iv); },250); }
+  if(!tryAttach()){ document.addEventListener('deviceready',tryAttach); document.addEventListener('DOMContentLoaded',tryAttach); let n=0; const iv=setInterval(()=>{ if(tryAttach()||++n>40)clearInterval(iv); },250); }
 })();
 
 /* =========================================================================
