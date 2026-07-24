@@ -13,6 +13,8 @@ const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const enc = encodeURIComponent;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+// Backend function URL for online subtitles — get from dashboard → Code → Functions → searchSubtitles → Endpoint URL
+const SUB_API_URL='/.netlify/functions/searchSubtitles';
 
 /* ---------- wordmark injection ---------- */
 function wordmark(el, size){
@@ -258,6 +260,7 @@ let state={type:'live',cat:null,cats:[],channels:[],activeCh:null};
 let hls=null;
 let isVod=false;                // current stream is on-demand
 let currentEpId='';
+let curItemName='';
 let episodeList=[];
 let pendingResume=0;
 let saveTimer=null;
@@ -494,7 +497,7 @@ function streamUrl(c){
 }
 async function play(c){
   if(state.type==='series' && CREDS.type!=='m3u') return playSeries(c);
-  currentEpId=''; episodeList=[]; updateNextBtn();
+  currentEpId=''; episodeList=[]; updateNextBtn(); curItemName=c.name||'';
   pushRecent(state.type,c);
   state.activeCh=c.stream_id; markPlaying();
   $('#placeholder').style.display='none';
@@ -507,7 +510,7 @@ async function play(c){
 function markPlaying(){ $$('#chList .ch').forEach(d=>d.classList.toggle('playing', d._id===state.activeCh)); }
 
 async function playSeries(c){
-  pushRecent('series',c); state.activeCh=c.series_id; markPlaying(); $('#placeholder').style.display='none';
+  pushRecent('series',c); state.activeCh=c.series_id; markPlaying(); $('#placeholder').style.display='none'; curItemName=c.name||'';
   $('#now').innerHTML=`<h2>${esc(c.name)}</h2><div class="buffering">Loading episodes…</div>`;
   try{
     const info=await api(`action=get_series_info&series_id=${c.series_id}`);
@@ -529,6 +532,7 @@ function playNext(){ const i=currentEpIndex(); if(i>=0&&i<episodeList.length-1){
 $('#pNext').addEventListener('click',playNext);
 
 function loadStream(url,live){
+  clearOnlineSubs(); $('#pCC').classList.remove('active');
   const v=$('#video');
   if(hls){ hls.destroy(); hls=null; }
   v.pause(); v.removeAttribute('src'); v.load();
@@ -609,6 +613,8 @@ function openTrackPop(mode){
     if(mode==='audio'){ const cur=hls&&hls.audioTracks?hls.audioTrack:(video.audioTracks?[...video.audioTracks].findIndex(t=>t.enabled):0); if(cur===it.i)d.classList.add('sel'); }
     else { let act=-1; if(hls&&hls.subtitleTracks&&hls.subtitleTracks.length){act=hls.subtitleTrack;} else if(video.textTracks)for(let i=0;i<video.textTracks.length;i++)if(video.textTracks[i].mode==='showing')act=i; if(act===it.i)d.classList.add('sel'); }
     d.onclick=()=>{ selectTrack(mode,it.i); closeTrackPop(); }; list.appendChild(d); });
+  if(mode==='caps'){ const sep=document.createElement('div'); sep.className='tnone'; sep.style.cssText='border-top:1px solid var(--line);margin-top:6px;padding:6px 10px;text-align:center'; sep.textContent='— ONLINE —'; list.appendChild(sep);
+    const od=document.createElement('div'); od.className='titem foc'; od.textContent='🔍 Search OpenSubtitles'; od.onclick=()=>searchOnlineSubs(); list.appendChild(od); }
   pop.classList.add('show');
   setTimeout(()=>{ const f=list.querySelector('.titem'); if(f)setFocus(f); },50);
 }
@@ -616,6 +622,40 @@ function closeTrackPop(){ $('#tpop').classList.remove('show'); if($('#vwrap').cl
 function selectTrack(mode,idx){ const v=video;
   if(mode==='audio'){ if(hls&&hls.audioTracks&&hls.audioTracks.length)hls.audioTrack=idx; else if(v.audioTracks)for(let i=0;i<v.audioTracks.length;i++)v.audioTracks[i].enabled=(i===idx); }
   else { if(hls&&hls.subtitleTracks&&hls.subtitleTracks.length){hls.subtitleTrack=idx;} else if(v.textTracks)for(let i=0;i<v.textTracks.length;i++)v.textTracks[i].mode=(i===idx?'showing':'disabled'); $('#pCC').classList.toggle('active',idx>=0); } }
+/* ---- Online subtitles (OpenSubtitles via backend function) ---- */
+let onlineSubUrl=null;
+function clearOnlineSubs(){ if(onlineSubUrl){ URL.revokeObjectURL(onlineSubUrl); onlineSubUrl=null; } $$('#video track[data-online]').forEach(t=>t.remove()); }
+async function searchOnlineSubs(){
+  const list=$('#tpopList'); list.innerHTML='<div class="tnone">Searching OpenSubtitles…</div>';
+  try{
+    const r=await fetch(SUB_API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'search',query:curItemName,language:'en'})});
+    if(!r.ok)throw new Error('Search failed ('+r.status+')');
+    const d=await r.json(); const results=d.results||[];
+    if(!results.length){ list.innerHTML='<div class="tnone">No subtitles found for "'+esc(curItemName)+'".</div>'; return; }
+    list.innerHTML='';
+    const hd=document.createElement('div'); hd.className='tnone'; hd.textContent='RESULTS FOR "'+esc(curItemName)+'"'; list.appendChild(hd);
+    results.forEach(it=>{ const el=document.createElement('div'); el.className='titem foc'; el.textContent=it.label; el.onclick=()=>downloadOnlineSub(it.file_id,it.label,it.language); list.appendChild(el); });
+    setTimeout(()=>{ const f=list.querySelector('.titem'); if(f)setFocus(f); },50);
+  }catch(e){ list.innerHTML='<div class="tnone">Error: '+esc(e.message)+'</div>'; }
+}
+async function downloadOnlineSub(fileId,label,lang){
+  const list=$('#tpopList'); list.innerHTML='<div class="tnone">Downloading subtitle…</div>';
+  try{
+    const r=await fetch(SUB_API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'download',file_id:fileId})});
+    if(!r.ok)throw new Error('Download failed ('+r.status+')');
+    const d=await r.json();
+    clearOnlineSubs();
+    const blob=new Blob([d.vtt],{type:'text/vtt'}); onlineSubUrl=URL.createObjectURL(blob);
+    const v=$('#video');
+    if(hls&&hls.subtitleTracks&&hls.subtitleTracks.length)hls.subtitleTrack=-1;
+    if(v.textTracks)for(let i=0;i<v.textTracks.length;i++)if(v.textTracks[i].mode==='showing')v.textTracks[i].mode='disabled';
+    const tk=document.createElement('track'); tk.kind='subtitles'; tk.label=label||'Online'; tk.srclang=lang||'en'; tk.src=onlineSubUrl; tk.setAttribute('data-online','1'); v.appendChild(tk);
+    tk.addEventListener('load',()=>{ tk.track.mode='showing'; });
+    tk.track.mode='showing';
+    $('#pCC').classList.add('active');
+    closeTrackPop();
+  }catch(e){ list.innerHTML='<div class="tnone">Error: '+esc(e.message)+'</div>'; }
+}
 $('#pAudio').addEventListener('click',()=>openTrackPop('audio'));
 $('#pCC').addEventListener('click',()=>openTrackPop('caps'));
 
